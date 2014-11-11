@@ -18,7 +18,6 @@ Gem::Specification.new do |spec|
   spec.test_files    = spec.files.grep(%r{^(test|spec|features)/})
   spec.require_paths = ["lib"]
 
-  spec.add_dependency 'json', '~> 1.8.1'
   spec.add_dependency 'redis', '~> 3.1.0'
   spec.add_dependency 'i18n', '~> 0.6.11'
   spec.add_dependency 'activesupport-inflector', '~> 0.1.0'

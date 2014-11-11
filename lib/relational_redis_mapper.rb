@@ -1,14 +1,17 @@
 require "relational_redis_mapper/version"
 require 'redis'
-require 'json'
 require 'pry'
 require 'active_support/inflector'
 require 'relational_redis_mapper/redis'
 require 'relational_redis_mapper/relation'
+require 'relational_redis_mapper/key_gen'
+require 'relational_redis_mapper/utility_methods'
 
-$redis = Redis.new
+
+$redis = RelationalRedisMapper::Redis.set(connection: ::Redis.new) 
 
 module RelationalRedisMapper
+  include UtilityMethods
 
   extend Forwardable
   attr_accessor :persisted, :id
@@ -17,80 +20,22 @@ module RelationalRedisMapper
     base.extend ClassMethods
   end
 
-  def_delegators :klass, :class_key, :search_key, :query_keys, :uniqueness_attr, :find, :has_many_relations
-
-  def klass
-    self.class
-  end
-
-  def redis
-    @redis ||= Redis.new
-  end
-
-  #relations
-  #def get_has_many(relation)
-  #ids = $redis.lrange relation_key(relation), 0, -1
-  #const_get(relation.to_s.capitalize).find_all_by_ids ids
-  #end
-
-  def to_hash
-    instance_variables.each_with_object({}) do |var, hash| 
-      hash[var.to_s.delete("@").to_sym] = instance_variable_get(var) 
-    end
-  end
-
-  def uuid
-    @uuid ||= SecureRandom.uuid
-  end
-
-  def save_object
-    self.id = uuid
-    $redis.hset class_key, uuid, self.to_hash.to_json
-  end
-
-  def delete_object
-    $redis.hdel class_key, id
-  end
-
-  #indices
-  def save_relational_indices(relation)
-    #$redis.lpush relation_key(relation), relation.id
-    @ordered_relations.each 
-  end
-
-  def save_indices
-    query_keys.each { |attr| $redis.lpush search_key(attr, send(attr)), uuid }
-    uniqueness_attr.each { |attr| $redis.set uniq_key(attr, send(attr)), uuid }
-  end
-
-  def remove_indices
-    query_keys.each { |attr| $redis.lrem search_key(attr, send(attr)),1, uuid }
-    uniqueness_attr.each { |attr| $redis.del uniq_key(attr, send(attr)) }
-  end
-
-  def relation_key(relation)
-    "has_many:#{class_key}:#{relation.class_key}"
-  end
-
-  def uniq_key(attr, val)
-    "unique:#{class_key}:#{attr}:#{val}"
-  end
-
-  def passes_unique_validator?
-    uniqueness_attr.none? { |attr| $redis.get uniq_key(attr, send(attr)) }
+  def_delegators :klass, :class_key, :query_keys, :uniqueness_attr, :key_gen, :redis
+  def id
+    @id ||= key_gen.uniq_id
   end
 
   class ValidationError; end
-
-  def validate 
-    passes_unique_validator? ? true : raise(ValidationError)
+  def validate
+    uniqueness_attr.none? do |attr| 
+      redis.get_uniq_index key_gen.uniqueness_key(attr, send(attr)) 
+    end || raise(ValidationError)
   end
 
   def save 
-    changed.delete if changed
+    persisted_version.delete if changed?
     if validate
-      save_object
-      save_indices
+      save_object; save_indices
       return self
     end
     nil
@@ -100,35 +45,45 @@ module RelationalRedisMapper
     remove_indices; delete_object
   end
 
-  def changed
-    if (other = find(id)) && (other != self)
-      other
-    end
+  def changed?
+    persisted_version && persisted_version != self
   end
 
-  def persisted?
-    self.id
+  def persisted_version
+    klass.find(id) 
+  end
+  
+  private
+
+  def save_object
+    redis.save_object class_key, id, self
   end
 
-  def ==(other)
-    #self.to_hash == other.to_hash
-    self.id == other.id
+  def delete_object
+    redis.delete_object class_key, id
   end
 
-  def dup
-    dup = super; dup.id = nil; dup
+  def save_indices
+    query_keys.all?{|attr| redis.add_query_index key_gen.query_key(attr, send(attr)), id } &&
+    uniqueness_attr.all?{|attr| redis.add_uniq_index key_gen.uniqueness_key(attr, send(attr)), id }
+  end
+
+  def remove_indices
+    query_keys.all?{|attr| redis.rm_search_index key_gen.query_key(attr, send(attr)), id } &&
+    uniqueness_attr.all? { |attr| redis.rm_uniq_index key_gen.uniqueness_key(attr, send(attr)) }
   end
 
   module ClassMethods
 
-    class ValidationError < Struct.new(:attribute, :message);end
-
-
     #attr_readers that default to empty array
-    [:ordered_relations, :query_keys, :uniqueness_attr, :has_many_relations].each do |reader|
+    [:query_keys, :uniqueness_attr].each do |reader|
       define_method reader do
         instance_variable_get "@#{reader}" || [] 
       end
+    end
+
+    def validate_uniqueness_of(*args)
+      @uniqueness_attr = args
     end
 
     def query_attr(*keys)
@@ -136,86 +91,61 @@ module RelationalRedisMapper
       keys.each do |key|
 
         define_singleton_method "find_by_#{key}" do |query| 
-          id = $redis.lindex(search_key(key, query), 0)
-          find id
+          find redis.find_id(key_gen.query_key(key, query))
         end
 
-      end
-    end
-
-    def find(id)
-      hash_init $redis.hget(class_key, id) rescue nil
-    end
-
-    def find_all_by_ids(ids)
-      $redis.hmget(class_key, ids).map do |json| 
-        hash_init json
-      end rescue nil
-    end
-
-    def where(attr, val)
-      find_all_by_ids where_ids(attr, val)
-    end
-
-    def where_ids(attr, val)
-      $redis.lrange search_key(attr, val), 0, -1
-    end
-
-    def search_key(attr_nm, attr_val)
-      "index:#{class_key}:#{attr_nm}:#{attr_val}"
-    end
-
-    def hash_init(json_hash)
-      JSON.parse(json_hash).each_with_object(new) do |(k,v), instance|
-        instance.instance_variable_set "@#{k}", v
       end
     end
 
     def has_many_ordered(opt)
-      @ordered_relations = opt
-
       opt.each do |relation_collection, order_by|
 
         define_method relation_collection do 
-          unless instance_variable_defined? "@#{relation_collection}"
-            instance_variable_set "@#{relation_collection}", Relation.new(self, relation_collection)
-          end
-          instance_variable_get "@#{relation_collection}"
-        end
-
-        #define_method "add_#{relation}" do |relation|
-          #key = relation_key(relation)
-          #relation.save
-          #score = relation.send(order_by)
-          #$redis.zadd(key, score, relation.id)
-        #end
-
-      end
-    end
-
-    def has_many(*others)
-      @has_many_relations = others
-
-      others.each do |relation|
-        define_method relation do
-          Relation.new(self, relation)
+          instance_variable_set(
+            "@#{relation_collection}", 
+            instance_variable_get("@#{relation_collection}") ||
+            Relation.new(self, relation_collection, order_by) 
+          )
         end
 
       end
     end
+    alias_method :has_many, :has_many_ordered
 
-    def all
-      $redis.hgetall(class_key).values.map { |x| hash_init x }
+
+    def find(id)
+      redis.find_object(class_key, id) 
+    end
+
+    def find_all_by_ids(ids)
+      redis.find_objects(class_key, ids)
+    end
+
+    def where(attr, attr_val)
+      find_all_by_ids get_all_ids(attr, attr_val) 
+    end
+
+    def get_all_ids(attr, val)
+      redis.find_ids key_gen.query_key(attr, val)
+    end
+
+     def all
+      redis.all_objects(class_key)
     end
 
     def class_key
-      self.to_s.gsub(/::/, '_').downcase
+      key_gen.class_key
     end
 
-    def validate_uniqueness_of(*args)
-      @uniqueness_attr = args
+    private
+
+    def redis
+      Redis.get
     end
 
+    def key_gen
+      @key_gen ||= KeyGen.new(self)
+    end
 
   end
 
