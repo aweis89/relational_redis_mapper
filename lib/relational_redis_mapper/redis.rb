@@ -44,8 +44,8 @@ module RelationalRedisMapper
       redis.set key, val
     end
 
-    def rm_uniq_index(key)
-      redis.del key
+    def rm_uniq_index(*key)
+      redis.del key.first
     end
 
     def get_uniq_index(key)
@@ -81,7 +81,7 @@ module RelationalRedisMapper
     private
 
     def initialize(opt)
-      @redis = opt[:connection] 
+      @redis      = opt[:connection] 
       @serializer = opt[:serializer] || Marshal
     end
 

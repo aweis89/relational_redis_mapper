@@ -23,10 +23,8 @@ module RelationalRedisMapper
     end
 
     def where(attr, val)
-      ids = all_relation_ids.select do |id|
-        get_all_ids(attr, val).include?(id)
-      end
-      find_all_by_ids ids
+      intersection_ids = all_relation_ids & get_all_ids(attr, val)
+      find_all_by_ids intersection_ids
     end
       
     def first
