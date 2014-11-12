@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.authors       = ["Aaron Weisberg"]
   spec.email         = ["aaronweisberg@gmail.com"]
   spec.summary       = %q{Allows for relational mapping using redis}
-  spec.description   = %q{TODO: Write a longer description. Optional.}
+  spec.description   = %q{ActiveRecord like interface backed by the blazing fast Redis.}
   spec.homepage      = ""
   spec.license       = "MIT"
 
