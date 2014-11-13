@@ -1,6 +1,6 @@
 # RelationalRedisMapper
 
-TODO: Write a gem description
+For example usage see https://github.com/aweis89/relational_redis_mapper/blob/master/spec/relational_redis_mapper_spec.rb
 
 ## Installation
 
@@ -20,7 +20,7 @@ Or install it yourself as:
 
 ## Usage
 
-TODO: Write usage instructions here
+For example usage see https://github.com/aweis89/relational_redis_mapper/blob/master/spec/relational_redis_mapper_spec.rb
 
 ## Contributing
 
